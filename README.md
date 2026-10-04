@@ -139,7 +139,7 @@ operational hardening. The current demo is intentionally unpaginated.
 
 <a id="russian"></a>
 
-## Русская инструкция
+## Инструкция на русском
 
 REST API на Go с примерами HTTP-тестов, аутентификации, проверки владельца,
 контракта PostgreSQL, изоляции фикстур, поиска гонок и покрытия в CI.
