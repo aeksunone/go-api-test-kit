@@ -1,5 +1,9 @@
 # Go API Test Kit
 
+[English](#english) | [Русский](#russian)
+
+<a id="english"></a>
+
 A small, runnable Go REST API with the tests people often leave until later:
 HTTP validation, bearer authentication, resource ownership, PostgreSQL contracts,
 parallel fixture isolation, race detection, and CI coverage artifacts.
@@ -133,16 +137,162 @@ Before production add proper secret management, HTTPS, authorization policy,
 rate limits, monitoring, readiness checks, migration tooling, pagination and
 operational hardening. The current demo is intentionally unpaginated.
 
-## Быстрый старт
+<a id="russian"></a>
+
+## Русская инструкция
+
+REST API на Go с примерами HTTP-тестов, аутентификации, проверки владельца,
+контракта PostgreSQL, изоляции фикстур, поиска гонок и покрытия в CI.
+
+**Это учебный шаблон, а не готовая production-система.** Токены `demo-alice`
+и `demo-bob` публичные. Не открывайте приложение в интернете, не храните
+реальные данные и не подключайте тесты к production-БД.
+
+### Установка и первый запуск
+
+Нужны Git, Go 1.26+, Make и C-компилятор для детектора гонок `-race`.
+Docker с Compose v2 и поддержкой `--wait` нужен только для локального PostgreSQL;
+для памяти и быстрых тестов необязателен. Команды рассчитаны на POSIX-оболочку.
 
 ```sh
-make test              # быстрые HTTP/unit-тесты и race detector
-make db-up             # временный PostgreSQL
-make test-integration  # реальные SQL-запросы, отдельная схема для каждого теста
-make run               # API в памяти, localhost:8080
-make db-down           # удалить временную БД
+git clone https://github.com/aeksunone/go-api-test-kit.git
+cd go-api-test-kit
+go mod download
+make test
+make run
 ```
 
-Токены `demo-alice` и `demo-bob` публичные и только для примера.
-Не используйте реальные данные или production-БД. Для интеграционных тестов
-нужны Go 1.26+, C-компилятор, Make и Docker Compose v2.
+Сервер слушает `127.0.0.1:8080`. Без `DATABASE_URL` задачи хранятся в памяти
+до перезапуска. Остановка: Ctrl+C. В другом терминале:
+
+```sh
+curl -s http://localhost:8080/healthz
+curl -s http://localhost:8080/users/me -H 'Authorization: Bearer demo-alice'
+curl -i http://localhost:8080/tasks \
+  -H 'Authorization: Bearer demo-alice' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Проверить доступ к чужой задаче"}'
+curl -s http://localhost:8080/tasks -H 'Authorization: Bearer demo-alice'
+# На свежем сервере первая созданная задача имеет ID 1.
+# Если задачи уже создавались, подставьте ID из ответа POST.
+curl -i http://localhost:8080/tasks/1 -H 'Authorization: Bearer demo-bob'
+```
+
+Последний запрос возвращает `404`: Bob не видит задачу Alice. Создание возвращает
+`201` и `Location`; список Alice содержит задачу.
+
+### Быстрые и интеграционные тесты
+
+`make test` запускает unit/HTTP-тесты с `-race`, без БД. Обычный
+`go test ./...` также не требует PostgreSQL, но сам не включает детектор гонок.
+Интеграционные тесты подключаются через build tag `integration`:
+
+```sh
+make db-up
+make test-integration
+make coverage
+go tool cover -html=coverage.out -o coverage.html
+make db-down
+```
+
+Compose запускает PostgreSQL 17 с публичными локальными реквизитами
+`testkit:testkit`, доступный только через loopback `127.0.0.1:55432`.
+Данные в `tmpfs`: остановка/удаление контейнера уничтожает их.
+`make db-down` удаляет временную БД.
+
+Каждая тестовая фикстура создаёт уникальную схему, применяет встроенную миграцию
+и задаёт `search_path` для всех соединений своего пула. После теста удаляется
+только созданная им схема. Общие таблицы не очищаются, поэтому фикстуры могут
+работать параллельно. Роли нужно право `CREATE` на базе. `db-init` тестам не нужен.
+
+Для существующей одноразовой тестовой БД:
+
+```sh
+TEST_DATABASE_URL='postgres://user:password@localhost/testdb?sslmode=disable' make test-integration
+```
+
+`make test-integration` включает быстрые тесты; по умолчанию используется
+Compose-адрес. Недоступная БД вызывает ошибку. При запуске
+`go test -tags=integration ./...` обязательно передайте `TEST_DATABASE_URL`:
+без него тесты завершаются ошибкой, а не пропускаются.
+
+### Сервер с PostgreSQL и настройки
+
+```sh
+make db-up
+make db-init  # только один раз для пустой локальной БД
+DATABASE_URL='postgres://testkit:testkit@localhost:55432/testkit?sslmode=disable' make run
+```
+
+Сервер проверяет соединение, но не применяет миграции автоматически.
+`db-init` работает только с БД проекта в Compose; повторное применение
+миграции завершится ошибкой. Чистый старт: `make db-down`, `make db-up`,
+`make db-init` (данные теряются). Для внешней БД примените
+`migrations/001_init.sql` самостоятельно.
+
+Переменные окружения:
+
+- `DATABASE_URL`: подключение сервера; без значения используется память.
+- `TEST_DATABASE_URL`: подключение интеграционных тестов и покрытия.
+- `ADDR`: адрес HTTP-сервера, например `ADDR=127.0.0.1:8081 make run`.
+- `GO`: команда Go для Make, например `make test GO=/path/to/go`.
+
+`.env.example` — образец; `.env` автоматически не загружается. Передавайте
+значения перед командой либо через `export`.
+
+### Контракт API
+
+Кроме `/healthz`, нужен `Authorization: Bearer <token>`. `demo-alice` — пользователь 1,
+`demo-bob` — пользователь 2; регистрации и входа нет.
+
+| Метод и маршрут | Успех | Назначение |
+| --- | --- | --- |
+| `GET /healthz` | 200 | Жив ли процесс; не проверка готовности БД |
+| `GET /users/me` | 200 | Текущий пользователь |
+| `GET /tasks` | 200 | Свои задачи по возрастанию ID; иначе `[]` |
+| `POST /tasks` | 201 | Создать `{"title":"…"}`, получить `Location` |
+| `GET /tasks/{id}` | 200 | Прочитать свою задачу |
+| `PUT /tasks/{id}` | 200 | Заменить `{"title":"…","done":true}` |
+| `DELETE /tasks/{id}` | 204 | Удалить свою задачу |
+
+PUT заменяет поля: пропущенное `done` становится `false`. POST запрещает
+`done:true`. Заголовок после обрезки крайних пробелов: 1–200 Unicode-символов.
+POST/PUT требуют JSON, отклоняют неизвестные поля и дополнительный JSON;
+предел тела — 4 КиБ. ID — положительный `int64`.
+
+Ошибки: `401` для отсутствующей/неверной авторизации, `400` для неверного ввода,
+`415` для неподходящего Content-Type, `404` для отсутствующей или чужой задачи.
+Формат — `{"error":"…"}`, кроме стандартных ответов роутера `404/405`.
+Принадлежность задачи проверяется непосредственно SQL-запросом.
+
+### Покрытие, CI и структура
+
+GitHub Actions проверяет форматирование, запускает `go vet`, интеграционные
+тесты с `-race` и загружает `coverage.out`. Локальный эквивалент — `make ci`;
+PostgreSQL должен работать. Порога покрытия нет; покрытие не гарантирует безопасность.
+
+- `cmd/api/`: запуск и корректное завершение сервера.
+- `internal/api/`: обработчики и HTTP-тесты через `httptest`.
+- `internal/store/`: интерфейс, память, PostgreSQL и общий контракт тестов.
+- `migrations/`: начальная схема и демонстрационные пользователи.
+- `.github/workflows/`: CI; `compose.yaml`: временная локальная БД.
+
+### Если что-то не работает
+
+- Занят `8080`: используйте `ADDR=127.0.0.1:8081 make run` и измените URL curl.
+- Занят `55432`: освободите порт либо используйте отдельную тестовую БД
+  с соответствующим `TEST_DATABASE_URL`.
+- БД недоступна: проверьте `docker compose ps`, `docker compose logs postgres`
+  и строку подключения; запустите `make db-up`.
+- Ошибка отсутствующей таблицы при работе API: для пустой Compose-БД выполните
+  `make db-init`; `/healthz` не выявляет отсутствующую схему.
+- `-race` требует cgo/компилятор: установите C toolchain, проверьте `go env CGO_ENABLED`
+  и при необходимости запускайте `CGO_ENABLED=1 make test`.
+
+### Адаптация под свой проект
+
+Переименуйте модуль и импорты, замените демонстрационные токены проверяемой
+идентификацией, добавьте правила предметной области, миграции и тесты общего
+контракта хранилищ. Перед production нужны управление секретами, HTTPS,
+политики доступа, ограничения запросов, мониторинг, readiness-проверки,
+инструменты миграций и эксплуатационная защита. Пагинации в примере нет.
